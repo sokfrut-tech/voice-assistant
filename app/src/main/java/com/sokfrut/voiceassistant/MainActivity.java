@@ -7,6 +7,8 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.speech.RecognizerIntent;
 import android.speech.tts.TextToSpeech;
 import android.view.Gravity;
@@ -15,23 +17,41 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONObject;
+import org.vosk.Model;
+import org.vosk.Recognizer;
+import org.vosk.android.RecognitionListener;
+import org.vosk.android.SpeechService;
+
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Locale;
 
 /**
- * Первый этап: кнопка, распознавание русской речи и простые команды.
- * Команды:
- *   «навигация до <место>» / «маршрут до <место>» — открыть маршрут в Яндекс Картах
- *   (если их нет, в Google Maps).
+ * Голосовой помощник, этап 2.
+ *  - Офлайн-распознавание русской речи (Vosk), если модель установлена.
+ *  - Если модели нет — системное распознавание речи.
+ *  - Кнопка «Обновить модель» скачивает и проверяет модель через интернет.
+ * Команды: «навигация до <место>» / «маршрут до <место>».
  */
 public class MainActivity extends Activity {
 
     private static final int REQ_SPEECH = 1;
     private static final int REQ_AUDIO = 2;
+    private static final float SAMPLE_RATE = 16000.0f;
+
+    private final Handler main = new Handler(Looper.getMainLooper());
 
     private TextView resultView;
+    private TextView statusView;
+    private Button speakButton;
     private TextToSpeech tts;
     private boolean ttsReady = false;
+
+    private ModelManager modelManager;
+    private Model voskModel;
+    private SpeechService speechService;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -43,16 +63,26 @@ public class MainActivity extends Activity {
         int pad = (int) (24 * getResources().getDisplayMetrics().density);
         root.setPadding(pad, pad, pad, pad);
 
-        Button speakButton = new Button(this);
+        speakButton = new Button(this);
         speakButton.setText("Говорить");
-        speakButton.setOnClickListener(v -> startListening());
+        speakButton.setOnClickListener(v -> onSpeakPressed());
         root.addView(speakButton);
+
+        Button updateButton = new Button(this);
+        updateButton.setText("Обновить модель");
+        updateButton.setOnClickListener(v -> updateModel());
+        root.addView(updateButton);
 
         resultView = new TextView(this);
         resultView.setGravity(Gravity.CENTER);
         resultView.setPadding(0, pad, 0, 0);
         resultView.setText("Нажмите «Говорить» и скажите, например: «навигация до Тверской улицы»");
         root.addView(resultView);
+
+        statusView = new TextView(this);
+        statusView.setGravity(Gravity.CENTER);
+        statusView.setPadding(0, pad / 2, 0, 0);
+        root.addView(statusView);
 
         setContentView(root);
 
@@ -67,9 +97,136 @@ public class MainActivity extends Activity {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
         }
+
+        modelManager = new ModelManager(this);
+        File installed = modelManager.installedModel();
+        if (installed != null) {
+            loadModel(installed);
+        } else {
+            statusView.setText("Офлайн-модель не установлена. Нажмите «Обновить модель».");
+        }
     }
 
-    private void startListening() {
+    // ---------- модель ----------
+
+    private void updateModel() {
+        modelManager.checkAndInstall(new ModelManager.Listener() {
+            @Override
+            public void onStatus(String text) {
+                statusView.setText(text);
+            }
+
+            @Override
+            public void onDone(File modelDir) {
+                loadModel(modelDir);
+            }
+
+            @Override
+            public void onError(String message) {
+                statusView.setText("Ошибка обновления: " + message);
+            }
+        });
+    }
+
+    private void loadModel(File dir) {
+        statusView.setText("Загружаю офлайн-модель…");
+        new Thread(() -> {
+            try {
+                Model model = new Model(dir.getAbsolutePath());
+                main.post(() -> {
+                    stopListening();
+                    if (voskModel != null) {
+                        voskModel.close();
+                    }
+                    voskModel = model;
+                    statusView.setText("Офлайн-распознавание готово (модель "
+                            + modelManager.installedVersion() + ")");
+                });
+            } catch (Exception | UnsatisfiedLinkError e) {
+                main.post(() -> statusView.setText("Не удалось загрузить модель: " + e.getMessage()));
+            }
+        }).start();
+    }
+
+    // ---------- распознавание ----------
+
+    private void onSpeakPressed() {
+        if (voskModel == null) {
+            startSystemRecognizer();
+            return;
+        }
+        if (speechService != null) {
+            stopListening();
+            return;
+        }
+        try {
+            Recognizer recognizer = new Recognizer(voskModel, SAMPLE_RATE);
+            speechService = new SpeechService(recognizer, SAMPLE_RATE);
+            speechService.startListening(new RecognitionListener() {
+                @Override
+                public void onPartialResult(String hypothesis) {
+                    String text = extract(hypothesis, "partial");
+                    if (!text.isEmpty()) {
+                        resultView.setText("… " + text);
+                    }
+                }
+
+                @Override
+                public void onResult(String hypothesis) {
+                    String text = extract(hypothesis, "text");
+                    if (!text.isEmpty()) {
+                        resultView.setText("Вы сказали: " + text);
+                        stopListening();
+                        handleCommand(text);
+                    }
+                }
+
+                @Override
+                public void onFinalResult(String hypothesis) {
+                    String text = extract(hypothesis, "text");
+                    if (!text.isEmpty()) {
+                        resultView.setText("Вы сказали: " + text);
+                        stopListening();
+                        handleCommand(text);
+                    }
+                }
+
+                @Override
+                public void onError(Exception exception) {
+                    statusView.setText("Ошибка распознавания: " + exception.getMessage());
+                    stopListening();
+                }
+
+                @Override
+                public void onTimeout() {
+                    stopListening();
+                }
+            });
+            speakButton.setText("Слушаю… (нажмите, чтобы остановить)");
+        } catch (IOException e) {
+            statusView.setText("Не удалось запустить микрофон: " + e.getMessage());
+            speechService = null;
+        }
+    }
+
+    private void stopListening() {
+        if (speechService != null) {
+            speechService.stop();
+            speechService.shutdown();
+            speechService = null;
+        }
+        speakButton.setText("Говорить");
+    }
+
+    private static String extract(String json, String key) {
+        try {
+            return new JSONObject(json).optString(key, "").trim();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private void startSystemRecognizer() {
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU");
@@ -78,7 +235,8 @@ public class MainActivity extends Activity {
             startActivityForResult(intent, REQ_SPEECH);
         } catch (ActivityNotFoundException e) {
             Toast.makeText(this,
-                    "Распознавание речи недоступно на этом телефоне", Toast.LENGTH_LONG).show();
+                    "Системное распознавание недоступно. Нажмите «Обновить модель» для офлайн-режима.",
+                    Toast.LENGTH_LONG).show();
         }
     }
 
@@ -96,6 +254,8 @@ public class MainActivity extends Activity {
         resultView.setText("Вы сказали: " + said);
         handleCommand(said);
     }
+
+    // ---------- команды ----------
 
     private void handleCommand(String text) {
         String lower = text.toLowerCase(new Locale("ru", "RU")).trim();
@@ -145,6 +305,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        stopListening();
+        if (voskModel != null) {
+            voskModel.close();
+        }
         if (tts != null) {
             tts.shutdown();
         }

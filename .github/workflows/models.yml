@@ -1,0 +1,62 @@
+name: Update model manifest
+
+# Скачивает офлайн-модель распознавания речи, считает контрольную сумму
+# и записывает описание в models/manifest.json (его читает приложение).
+on:
+  workflow_dispatch:
+    inputs:
+      model_url:
+        description: 'Адрес zip-архива модели Vosk'
+        required: true
+        default: 'https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip'
+      version:
+        description: 'Версия модели'
+        required: true
+        default: '0.22'
+      folder:
+        description: 'Имя папки внутри архива'
+        required: true
+        default: 'vosk-model-small-ru-0.22'
+
+permissions:
+  contents: write
+
+jobs:
+  manifest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download model and compute checksum
+        env:
+          MODEL_URL: ${{ inputs.model_url }}
+          VERSION: ${{ inputs.version }}
+          FOLDER: ${{ inputs.folder }}
+        run: |
+          set -euo pipefail
+          case "$MODEL_URL" in https://*) ;; *) echo "::error::only https"; exit 1;; esac
+          curl -fsSL --retry 3 -o model.zip "$MODEL_URL"
+          SHA=$(sha256sum model.zip | cut -d' ' -f1)
+          SIZE=$(stat -c%s model.zip)
+          unzip -l model.zip | grep -q " $FOLDER/" || { echo "::error::folder $FOLDER not found in archive"; exit 1; }
+          mkdir -p models
+          python3 - <<PY
+          import json, os
+          data = {"models": {"vosk-ru": {
+              "version": os.environ["VERSION"],
+              "url": os.environ["MODEL_URL"],
+              "sha256": "$SHA",
+              "size": $SIZE,
+              "folder": os.environ["FOLDER"],
+          }}}
+          json.dump(data, open("models/manifest.json", "w"), indent=2)
+          PY
+          cat models/manifest.json
+
+      - name: Commit manifest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add models/manifest.json
+          git diff --cached --quiet || git commit -m "Обновить описание модели"
+          git push
