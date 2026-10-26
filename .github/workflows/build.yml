@@ -8,6 +8,8 @@ jobs:
   build:
     # Закреплена версия: на ubuntu-24.04 Android SDK уже установлен.
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -65,3 +67,16 @@ jobs:
         with:
           name: voice-assistant-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish APK to Releases (test build)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk voice-assistant-debug.apk
+          gh release delete latest-debug --yes --cleanup-tag || true
+          gh release create latest-debug voice-assistant-debug.apk \
+            --prerelease \
+            --target "${{ github.sha }}" \
+            --title "Тестовая сборка" \
+            --notes "Автоматическая отладочная сборка (debug). Коммит ${{ github.sha }}."
