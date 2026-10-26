@@ -6,7 +6,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Закреплена версия: на ubuntu-24.04 Android SDK уже установлен.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -15,14 +16,49 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
+      - name: Prepare Android SDK (licenses and platform 34)
+        run: |
+          set -o pipefail
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > sdk.log 2>&1 || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" >> sdk.log 2>&1 || {
+            msg=$(tail -n 40 sdk.log | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=SDK setup failed::$msg"
+            exit 1
+          }
+
+      - name: Security check of manifest
+        run: |
+          M=app/src/main/AndroidManifest.xml
+          fail=0
+          if grep -q 'android:debuggable="true"' "$M"; then echo "::error::debuggable=true in manifest"; fail=1; fi
+          if grep -q 'usesCleartextTraffic="true"' "$M"; then echo "::error::cleartext traffic allowed"; fail=1; fi
+          echo "Permissions requested:"
+          grep -o 'android.permission.[A-Z_]*' "$M" | sort -u
+          exit $fail
+
+      - name: Lint
+        run: |
+          set -o pipefail
+          gradle lintDebug --no-daemon 2>&1 | tee lint.log || {
+            msg=$(tail -n 60 lint.log | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=Lint failed::$msg"
+            exit 1
+          }
+
       - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon 2>&1 | tee build.log || {
+            msg=$(tail -n 60 build.log | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=Build failed::$msg"
+            exit 1
+          }
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
