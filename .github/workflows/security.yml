@@ -33,10 +33,10 @@ jobs:
         run: sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
       - uses: github/codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4
         with:
-          languages: java-kotlin
+          languages: java
           build-mode: manual
       - name: Build Kotlin sources for CodeQL
-        run: gradle --no-daemon :app:compileDebugKotlin
+        run: gradle --no-daemon :app:compileDebugJavaWithJavac
       - uses: github/codeql-action/analyze@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4
         with:
           category: /language:java-kotlin
