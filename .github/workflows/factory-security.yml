@@ -22,27 +22,16 @@ jobs:
     name: Secret scanning
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: Scan repository history for exposed secrets
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  codeql:
-    name: CodeQL static analysis
-    runs-on: ubuntu-latest
+  factory-toolchain:
+    name: Factory shared static toolchain
+    uses: sokfrut-tech/Universal-AI-Factory/.github/workflows/factory-security-reusable.yml@e7baedf0aa08a5f3772dcd0ff1a4639ac19d805e
     permissions:
-      actions: read
       contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v4
-        with:
-          languages: java-kotlin
-          build-mode: none
-      - uses: github/codeql-action/analyze@v4
-        with:
-          category: /language:java-kotlin
