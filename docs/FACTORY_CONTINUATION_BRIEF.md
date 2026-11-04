@@ -21,3 +21,8 @@ No speculative rewrite, no credentials in Git, no production or app publishing w
 
 ## Resume
 Start with read-only repository inventory and current PR/CI refresh. ChatGPT continues directly if external agents are unavailable.
+
+
+## Documentation handoff PR
+- Continuation brief PR: [#16](https://github.com/sokfrut-tech/voice-assistant/pull/16) (draft; not merged).
+- Review this brief against current main before code changes.
